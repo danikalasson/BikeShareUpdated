@@ -43,3 +43,13 @@ my_linear_model <- linear_reg()%>%
 
 bike_predictions <- predict(my_linear_model, new_data =test_data)
 bike_predictions
+
+#Kaggle Format
+kaggle_submission <- bike_predictions %>%
+bind_cols(., test_data) %>% #Bind predictions with test data
+  select(datetime, .pred) %>% #Just keep datetime and prediction variables
+  rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+## Write out the file9
+vroom_write(x=kaggle_submission, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/LinearPreds.csv", delim=",")
