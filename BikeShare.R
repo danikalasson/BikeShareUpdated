@@ -17,6 +17,20 @@ test_data <- vroom("C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeSha
 test_data$weather <- as.factor(test_data$weather)
 test_data$season <- as.factor(test_data$season)
 
+#Data Mutation and feature engineering
+my_recipe <- recipe(Response~..., data=training_data) %>%
+  step_mutate(count = log(count))#Turn response var to be log count
+  step_mutate(weather=ifselse(4 ==3,weather)) %>% #Change weather factor
+  step_mutate(weather=as.factor(weather)) %>% #Create a new variable
+  step_mutate(season = as.factor(season)) %>% #Create polynomial expansion of var
+  step_date(datetime, features=c("hour")) %>% # gets hour of week
+  step_time(datetime, features=c("dow"))#create day variable
+  
+prepped_recipe <- prep(my_recipe)
+baked_train <- bake(prepped_recipe, new_data = NULL)
+baked_test <- bake(prepped_recipe, new_data = test_data)
+  
+
 #EDA
 glimpse(training_data)
 plot_correlation(training_data)
@@ -41,8 +55,20 @@ my_linear_model <- linear_reg()%>%
   set_mode("regression") %>%
   fit(formula = count ~ .-datetime, data = training_data)
 
-bike_predictions <- predict(my_linear_model, new_data =test_data)
-bike_predictions
+bike_workflow <- workflow() %>%
+  add_model(my_linear_model) %>%
+  add_recipe(my_recipe)
+
+# Fit model
+bike_fit <- fit(bike_workflow, data = training_data)
+
+# Predict on test data (log scale first)
+bike_predictions <- predict(bike_fit, new_data = test_data)
+
+# Back-transform log(count) -> count
+bike_predictions <- bike_predictions %>%
+  mutate(count = exp(.pred)) %>%
+  select(count)
 
 #Kaggle Format
 kaggle_submission <- bike_predictions %>%
