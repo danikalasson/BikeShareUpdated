@@ -6,6 +6,7 @@ library(DataExplorer)
 library(dplyr)
 library(patchwork)
 library(glmnet)
+library(rpart)
 
 #Load in and clean data
 training_data <- vroom("C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/bike-sharing-demand/train.csv")
@@ -116,6 +117,69 @@ kaggle_submission_final_wf<- final_preds %>%
 ## Write out the file
 vroom_write(x=kaggle_submission_preg1, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_wf.csv", delim=",")
 
+
+#Regression Trees############################################################################
+tree_recipe <- recipe(count ~ ., data = training_data) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_mutate(season = as.factor(season)) %>%
+  step_time(datetime, features = c("hour")) %>%
+  step_date(datetime, features = c("dow")) %>%
+  step_rm(datetime)%>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+my_mod <- decision_tree(tree_depth = tune(),
+                        cost_complexity = tune(),
+                        min_n=tune()) %>% #Type of model
+  set_engine("rpart") %>% # What R function to use
+  set_mode("regression")
+
+## Set Workflow
+tree_wf <- workflow() %>%
+  add_recipe(tree_recipe) %>%
+  add_model(my_mod)
+
+## Grid of values to tune over
+grid_of_tuning_params <- grid_regular(tree_depth(),
+                                      cost_complexity(),
+                                      min_n(),
+                                      levels=L) ## L^2 total tuning possibilities
+
+## Split data for CV
+folds <- vfold_cv(training_data, v = K, repeats=1)
+
+## Run the CV
+CV_results <- tree_wf %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae)) #Or leave metrics NULL
+
+
+## Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
+
+## Finalize the Workflow & fit it
+final_tree_wf <-tree_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=training_data)
+
+## Predict
+final_tree_preds <- final_tree_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(count = exp(.pred)) %>%   # back-transform log scale
+  select(count)
+
+#Kaggle Format
+kaggle_submission_tree_wf<- final_tree_preds %>%
+  bind_cols(., test_data) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  rename(count=count) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>%#pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime)))
+## Write out the file
+vroom_write(x=kaggle_submission_tree_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_tree_wf.csv", delim=",")
 
 
 
