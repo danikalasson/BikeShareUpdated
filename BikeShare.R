@@ -256,6 +256,7 @@ boost_recipe <- recipe(count ~ ., data = training_data) %>%
   step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
   step_mutate(season = as.factor(season)) %>%
   step_time(datetime, features = c("hour")) %>%
+  step_date(datetime, features = c("month")) %>%
   step_date(datetime, features = c("dow")) %>%
   step_rm(datetime)%>%
   step_dummy(all_nominal_predictors()) %>%
@@ -280,22 +281,39 @@ boost_wf <- workflow() %>%
   add_model(boost_model)
 ## Set up grid of tuning values
 # Define parameter ranges
-boost_params <- parameters(
-  tree_depth(),
-  trees(),
-  learn_rate()
-)
+#boost_params <- parameters(
+#  tree_depth(),
+#  trees(),
+#  learn_rate()
+#)
 
 # Build a grid with L levels for each
-mygrid <- grid_regular(boost_params, levels = L)
+#mygrid <- grid_regular(boost_params, levels = L)
 ## Set up K-fold CV
 folds <- vfold_cv(training_data, v = K, repeats=1)
 
-## Run the CV
+#Chat Code##################
+boost_params <- parameters(
+  tree_depth(range = c(3L, 8L)),
+  trees(range = c(100L, 500L)),
+  learn_rate(range = c(-2, -0.5)) # log10 scale
+)
+
+mygrid <- grid_random(boost_params, size = 100)
+
 CV_results <- boost_wf %>%
-  tune_grid(resamples=folds,
-            grid=mygrid,
-            metrics=metric_set(rmse, mae)) #Or leave metrics NULL
+  tune_grid(
+    resamples = folds,
+    grid = mygrid,
+    metrics = metric_set(rmse, mae),
+    control = control_grid(verbose = TRUE, allow_par = TRUE)
+  )
+#############################
+## Run the CV
+#CV_results <- boost_wf %>%
+#  tune_grid(resamples=folds,
+#            grid=mygrid,
+#            metrics=metric_set(rmse, mae)) #Or leave metrics NULL
 
 
 ## Find Best Tuning Parameters
@@ -321,6 +339,55 @@ kaggle_submission_boost_wf<- final_boost_preds %>%
   mutate(datetime=as.character(format(datetime)))
 ## Write out the file
 vroom_write(x=kaggle_submission_boost_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_boost.csv", delim=",")
+
+
+#Stacking##########################################################################################################
+## Libraries
+library(agua) #Install if necessary
+stack_recipe <- recipe(count ~ ., data = training_data) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_mutate(season = as.factor(season)) %>%
+  step_time(datetime, features = c("hour")) %>%
+  step_date(datetime, features = c("month")) %>%
+  step_date(datetime, features = c("dow")) %>%
+  step_rm(datetime)%>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+## Initialize an h2o session
+h2o::h2o.init()
+
+## Define the model
+## max_runtime_secs = how long to let h2o.ai run
+## max_models = how many models to stack
+auto_model <- auto_ml() %>%
+set_engine("h2o", max_runtime_secs=600, max_models=20) %>%
+set_mode("regression")
+
+## Combine into Workflow
+automl_wf <- workflow() %>%
+add_recipe(stack_recipe) %>%
+add_model(auto_model) %>%
+fit(data=training_data)
+
+## Predict
+final_stack_preds <- automl_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(count = exp(.pred)) %>%   # back-transform log scale
+  select(count)
+
+#Kaggle Format
+kaggle_submission_stack_wf<- final_stack_preds %>%
+  bind_cols(., test_data) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  rename(count=count) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>%#pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime)))
+## Write out the file
+vroom_write(x=kaggle_submission_stack_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_stack.csv", delim=",")
+
+
 
 
 
