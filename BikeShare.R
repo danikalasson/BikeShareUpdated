@@ -182,11 +182,152 @@ kaggle_submission_tree_wf<- final_tree_preds %>%
 vroom_write(x=kaggle_submission_tree_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_tree_wf.csv", delim=",")
 
 
+#Random Forests###################################################################################
+library(ranger)
+L<-3
+K<-3
+maxNumXs <- 4
+forest_recipe <- recipe(count ~ ., data = training_data) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_mutate(season = as.factor(season)) %>%
+  step_time(datetime, features = c("hour")) %>%
+  step_date(datetime, features = c("dow")) %>%
+  step_rm(datetime)%>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+my_mod <- rand_forest(mtry = tune(),
+                      min_n=tune(),
+                      trees=1000) %>% #Type of model
+  set_engine("ranger") %>% # What R function to use
+  set_mode("regression")
+
+## Create a workflow with model & recipe
+forest_wf <- workflow() %>%
+  add_recipe(forest_recipe) %>%
+  add_model(my_mod)
+## Set up grid of tuning values
+mygrid <- grid_regular(mtry(range = c(1, maxNumXs)),
+                       min_n(),
+                       levels = L)
+## Set up K-fold CV
+folds <- vfold_cv(training_data, v = K, repeats=1)
+
+## Run the CV
+CV_results <- forest_wf %>%
+  tune_grid(resamples=folds,
+            grid=mygrid,
+            metrics=metric_set(rmse, mae)) #Or leave metrics NULL
+
+
+## Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
+## Finalize workflow and predict
+final_forest_wf <-forest_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=training_data)
+
+## Predict
+final_forest_preds <- final_forest_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(count = exp(.pred)) %>%   # back-transform log scale
+  select(count)
+
+#Kaggle Format
+kaggle_submission_forest_wf<- final_forest_preds %>%
+  bind_cols(., test_data) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  rename(count=count) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>%#pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime)))
+## Write out the file
+vroom_write(x=kaggle_submission_forest_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_forest.csv", delim=",")
+
+
+#Boosted Trees and BART####################################################################
+library(bonsai)
+library(lightgbm)
+L<-3
+K<-3
+maxNumXs <- 4
+boost_recipe <- recipe(count ~ ., data = training_data) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_mutate(season = as.factor(season)) %>%
+  step_time(datetime, features = c("hour")) %>%
+  step_date(datetime, features = c("dow")) %>%
+  step_rm(datetime)%>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+boost_model <- boost_tree(tree_depth=tune(),
+                          trees=tune(),
+                          learn_rate=tune()) %>%
+set_engine("lightgbm") %>% #or "xgboost" but lightgbm is faster
+  set_mode("regression")
+
+bart_model <- bart(trees=tune()) %>% # BART figures out depth and learn_rate
+  set_engine("dbarts") %>% # might need to install
+  set_mode("regression")
+
+
+## CV tune, finalize and predict here and save results
+## Create a workflow with model & recipe
+boost_wf <- workflow() %>%
+  add_recipe(boost_recipe) %>%
+  add_model(boost_model)
+## Set up grid of tuning values
+# Define parameter ranges
+boost_params <- parameters(
+  tree_depth(),
+  trees(),
+  learn_rate()
+)
+
+# Build a grid with L levels for each
+mygrid <- grid_regular(boost_params, levels = L)
+## Set up K-fold CV
+folds <- vfold_cv(training_data, v = K, repeats=1)
+
+## Run the CV
+CV_results <- boost_wf %>%
+  tune_grid(resamples=folds,
+            grid=mygrid,
+            metrics=metric_set(rmse, mae)) #Or leave metrics NULL
+
+
+## Find Best Tuning Parameters
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
+## Finalize workflow and predict
+final_boost_wf <-boost_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=training_data)
+
+## Predict
+final_boost_preds <- final_boost_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(count = exp(.pred)) %>%   # back-transform log scale
+  select(count)
+
+#Kaggle Format
+kaggle_submission_boost_wf<- final_boost_preds %>%
+  bind_cols(., test_data) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  rename(count=count) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>%#pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime)))
+## Write out the file
+vroom_write(x=kaggle_submission_boost_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_boost.csv", delim=",")
 
 
 
 
-#Predictions
+
+
+#Old Stuff Predictions################################################################
 # Workflow
 bike_workflow <- workflow() %>%
   add_model(linear_reg() %>% set_engine("lm")) %>%
