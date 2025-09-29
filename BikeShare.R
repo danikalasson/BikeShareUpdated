@@ -390,10 +390,6 @@ vroom_write(x=kaggle_submission_stack_wf, file="C:/Users/lasso/OneDrive/Document
 
 
 
-
-
-
-
 #Old Stuff Predictions################################################################
 # Workflow
 bike_workflow <- workflow() %>%
