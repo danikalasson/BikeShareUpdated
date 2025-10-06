@@ -31,8 +31,11 @@ my_recipe <- recipe(count ~ ., data = training_data) %>%
   step_normalize(all_numeric_predictors()) %>%
   step_zv(all_predictors())
 
-prepped_recipe <- prep(my_recipe) # Sets up the preprocessing using myDataSet13
-bake(prepped_recipe, new_data=training_data)  
+prepped_recipe <- prep(my_recipe) # Sets up the preprocessing using myDataSet
+baked_data <-bake(prepped_recipe, new_data=training_data)  
+vroom_write(x=baked_data, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/baked_data.csv", delim=",")
+baked_test_data <- bake(prepped_recipe, new_data = test_data)
+vroom_write(x=baked_test_data, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/baked_data_test.csv", delim=",")
 
 #Penalized Regression Section#################################################################################################
 #Penalized Regression Try 1
@@ -249,36 +252,62 @@ vroom_write(x=kaggle_submission_forest_wf, file="C:/Users/lasso/OneDrive/Documen
 #Boosted Trees and BART####################################################################
 library(bonsai)
 library(lightgbm)
-L<-3
-K<-3
-maxNumXs <- 4
-boost_recipe <- recipe(count ~ ., data = training_data) %>%
+L<-4
+K<-4
+maxNumXs <- 3
+bart_model <- parsnip::bart(mode = "regression") %>%
+  set_engine("dbarts") %>%
+  set_args(
+    trees = tune())
+
+bart_recipe <- recipe(count ~ ., data = training_data) %>%
   step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
   step_mutate(season = as.factor(season)) %>%
   step_time(datetime, features = c("hour")) %>%
   step_date(datetime, features = c("month")) %>%
   step_date(datetime, features = c("dow")) %>%
+  step_date(datetime, features = c("year")) %>%
   step_rm(datetime)%>%
   step_dummy(all_nominal_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
   step_zv(all_predictors())
 
-boost_model <- boost_tree(tree_depth=tune(),
-                          trees=tune(),
-                          learn_rate=tune()) %>%
-set_engine("lightgbm") %>% #or "xgboost" but lightgbm is faster
-  set_mode("regression")
+prepped_bart_recipe <- prep(bart_recipe)
+bart_data <- bake(prepped_bart_recipe, new_data = training_data)
 
-bart_model <- bart(trees=tune()) %>% # BART figures out depth and learn_rate
-  set_engine("dbarts") %>% # might need to install
-  set_mode("regression")
+#boost_recipe <- recipe(count ~ ., data = training_data) %>%
+#  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+#  step_mutate(season = as.factor(season)) %>%
+#  step_time(datetime, features = c("hour")) %>%
+#  step_date(datetime, features = c("month")) %>%
+#  step_date(datetime, features = c("dow")) %>%
+#  step_date(datetime, features = c("year"))
+#  step_rm(datetime)%>%
+#  step_dummy(all_nominal_predictors()) %>%
+#  step_normalize(all_numeric_predictors()) %>%
+#  step_zv(all_predictors())
+
+#boost_model <- boost_tree(tree_depth=tune(),
+#                          trees=tune(),
+#                          learn_rate=tune()) %>%
+#set_engine("lightgbm") %>% #or "xgboost" but lightgbm is faster
+#  set_mode("regression")
+
+#bart_model <- bart(trees=tune()) %>% # BART figures out depth and learn_rate
+#  set_engine("dbarts") %>% # might need to install
+#  set_mode("regression")
 
 
 ## CV tune, finalize and predict here and save results
 ## Create a workflow with model & recipe
-boost_wf <- workflow() %>%
-  add_recipe(boost_recipe) %>%
-  add_model(boost_model)
+#boost_wf <- workflow() %>%
+#  add_recipe(boost_recipe) %>%
+#  add_model(boost_model)
+
+## BART model instead
+bart_wf <- workflow() %>%
+  add_recipe(bart_recipe) %>%
+  add_model(bart_model)
 ## Set up grid of tuning values
 # Define parameter ranges
 #boost_params <- parameters(
@@ -293,15 +322,15 @@ boost_wf <- workflow() %>%
 folds <- vfold_cv(training_data, v = K, repeats=1)
 
 #Chat Code##################
-boost_params <- parameters(
-  tree_depth(range = c(3L, 8L)),
-  trees(range = c(100L, 500L)),
-  learn_rate(range = c(-2, -0.5)) # log10 scale
-)
+#boost_params <- parameters(
+#  tree_depth(range = c(3L, 8L)),
+#  trees(range = c(100L, 500L)),
+#  learn_rate(range = c(-2, -0.5)) # log10 scale
+#)
 
-mygrid <- grid_random(boost_params, size = 100)
+mygrid <- grid_random(boost_params, size = 1000)
 
-CV_results <- boost_wf %>%
+CV_results <- bart_wf %>%
   tune_grid(
     resamples = folds,
     grid = mygrid,
@@ -323,6 +352,57 @@ bestTune <- CV_results %>%
 final_boost_wf <-boost_wf %>%
   finalize_workflow(bestTune) %>%
   fit(data=training_data)
+
+###############################################################################
+# You can include 500 as a candidate and test a few others nearby
+bart_params <- parameters(
+  trees(range = c(300L, 700L))
+)
+
+# Create a random grid (sampled values)
+bart_grid <- grid_regular(
+  trees(range = c(50,300)),
+  levels = 5
+)
+
+# --- Tune using CV ---
+CV_results <- bart_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = bart_grid,
+    metrics = metric_set(rmse, mae)
+  )
+
+# --- Select the best model ---
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# --- Finalize and fit full model ---
+final_bart_wf <- bart_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = training_data)
+
+# --- Predict on test data ---
+final_bart_preds <- final_bart_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(count = exp(.pred)) %>%
+  select(count)
+
+# --- Format for submission ---
+kaggle_submission_bart <- final_bart_preds %>%
+  bind_cols(test_data) %>%
+  select(datetime, count) %>%
+  mutate(count = pmax(0, count)) %>%
+  mutate(datetime = as.character(format(datetime)))
+
+# --- Save CSV ---
+vroom_write(
+  x = kaggle_submission_bart,
+  file = "C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_bart.csv",
+  delim = ","
+)
+
+###########################################################################################
 
 ## Predict
 final_boost_preds <- final_boost_wf %>%
@@ -386,6 +466,23 @@ kaggle_submission_stack_wf<- final_stack_preds %>%
   mutate(datetime=as.character(format(datetime)))
 ## Write out the file
 vroom_write(x=kaggle_submission_stack_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/final_stack.csv", delim=",")
+
+
+#Data Robot############################################################################################
+data_robot <- vroom("C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/datarobot_preds.csv")
+final_datarobot_preds <- data_robot %>%
+  mutate(count = count_PREDICTION)%>%
+  select(count)
+kaggle_submission_datarobot_wf<- final_datarobot_preds %>%
+  bind_cols(., test_data) %>% #Bind predictions with test data
+  select(datetime, count) %>% #Just keep datetime and prediction variables
+  rename(count=count) %>% #rename pred to count (for submission to Kaggle)
+  mutate(count=pmax(0, count)) %>%#pointwise max of (0, prediction)
+  mutate(datetime=as.character(format(datetime)))
+## Write out the file
+vroom_write(x=kaggle_submission_stack_wf, file="C:/Users/lasso/OneDrive/Documents/Fall 2025/Stat 348/BikeShareUpdated/data_robot.csv", delim=",")
+
+
 
 
 
